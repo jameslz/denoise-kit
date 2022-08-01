@@ -1,0 +1,81 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ($config)        = @ARGV;
+my %metadata        = ();
+profile();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}};
+my  $summarize      =  qq{$project_home/summarize};
+my  $denoise        =  qq{$summarize/denoise};
+my  $uniques        =  qq{$summarize/uniques};
+my  $runs           =  qq{$summarize/runs};
+
+my  $unoise         =  qq{$project_home/denoise};
+my  $utils          =  dirname( abs_path($0) ) . '/../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../binaries';
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub submit {
+
+    make_fs();
+    denoise();
+    utils();
+
+}
+
+sub profile {
+
+    open( PROFILE,  $config )  || die "[ERR]: can't open $config $!\n";
+    while(<PROFILE>){
+       
+        $_ =~ s/\s+$//;  
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = split /\s+/, $_, 2;
+        $metadata{ $key } = $value;
+    
+    } 
+    close PROFILE;
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $runs $uniques $denoise};
+    system $cmd;
+
+}
+
+sub denoise {
+
+    my $sh = qq{$runs/denoise.sh};
+    
+    open(EXPORT, qq{>$sh} ) || die "[ERR]: can't open $sh $!";
+
+    print EXPORT qq{cp -r $unoise/uniques/*.fasta $summarize/uniques/ ;\n};    
+    print EXPORT qq{cp -r $unoise/unoise/*.mem.txt $summarize/denoise/ ;\n};
+    print EXPORT qq{cp -r $unoise/unoise/*.fasta $summarize/denoise/ ;\n};
+    print EXPORT qq{cp -r $unoise/report/sample.stats.txt $summarize/sample.stats.txt ;\n};
+
+    close EXPORT;
+    system  qq{cat $sh | bash} if(!$dry_run);
+
+}
+
+sub utils {
+
+    `rm -rf $summarize/runs`;
+
+}

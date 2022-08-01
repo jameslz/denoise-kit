@@ -1,0 +1,285 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage: denoise <metadata>" if(@ARGV != 1);
+
+my ($config )      = @ARGV;
+
+my %metadata       = ();
+profile();
+
+my  $project_home  = qq{$metadata{project_home}/$metadata{project_id}/denoise};
+
+
+my  $reads         = qq{$project_home/reads};
+my  $uniques       = qq{$project_home/uniques};
+my  $unoise        = qq{$project_home/unoise};
+my  $runs          = qq{$project_home/runs};
+my  $report        = qq{$project_home/report};
+
+my  $datasets      = qq{$metadata{project_home}/$metadata{project_id}/primer_strip/reads};
+
+my  $utils         =  dirname( abs_path($0) ) . '/../utils';
+my  $binaries      =  dirname( abs_path($0) ) . '/../binaries';
+my  $db            =  dirname( abs_path($0) ) . '/../db';
+
+my  @samples_t     = ();
+
+my  $dry_run       =  0;
+    $dry_run       =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub profile {
+
+    open( PROFILE,  $config )  || die "[ERR]: can't open $config $!\n";
+    while(<PROFILE>){
+        $_ =~ s/\s+$//;  
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = split /\s+/, $_, 2;
+        $metadata{ $key } = $value;
+    } 
+    close PROFILE;
+
+    foreach my $db (qw/mapping_file maxee unoise3_param/) {
+        if(! exists $metadata{$db}){
+            print STDERR "[ERR]: please specify the $db metadata.\n";
+            exit;
+        }
+    }
+
+}
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    denoise_run();
+    zotu_run();
+    stats_run();
+    summarize_run();
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})  || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+        $_ =~ s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+    }
+    close PROFILE;
+  
+}
+
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $reads    \
+                          $runs     \
+                          $uniques  \
+                          $unoise   \
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub denoise_run {
+    
+    my $sh = qq{$runs/denoise.sh};
+    open(EXPORT, qq{>$sh} ) || die "[ERR]: can't open $!";
+    
+    foreach my $sample ( @samples_t ) {
+        print EXPORT labels( $sample );
+        print EXPORT uniquess( $sample );
+        print EXPORT unoise( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 3 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+}
+
+sub labels {
+  
+    my $sample  = shift;
+    my $cmd     = qq{$binaries/fastx-utils rename         \
+                         $datasets/$sample.fastq          \
+                         $sample                          \
+                    |$binaries/fastx-utils label          \
+                         -  ";sample=$sample;"            \
+                    |$binaries/atlas-utils maxee          \
+                         -q 33                            \
+                         -E $metadata{maxee} -            \
+                    >$reads/$sample.fastq ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+}
+
+sub uniquess {
+
+    my $sample  = shift;
+    my $cmd = qq{$binaries/usearch                       \
+                   -fastx_uniques $reads/$sample.fastq   \
+                   -relabel Uniq                         \
+                   -sizeout                              \
+                   -fastaout $uniques/$sample.fasta      \
+                   -threads $metadata{cpus}              \
+                   -uc $uniques/$sample.uc               \
+                   -log $uniques/$sample.log; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+}
+
+sub unoise {
+
+    my $sample  = shift;
+    my $cmd = qq{$binaries/usearch                      \
+                    -unoise3 $uniques/$sample.fasta     \
+                    $metadata{unoise3_param}            \
+                    -tabbedout $unoise/$sample.txt      \
+                    -log $unoise/$sample.log; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub zotu_run {
+    
+    my $sh = qq{$runs/zotu.sh};
+    open(EXPORT, qq{>$sh} ) || die "[ERR]: can't open $!";
+    
+    foreach my $sample ( @samples_t ) {
+        print EXPORT zotus( $sample );
+        print EXPORT maps( $sample );
+        print EXPORT size( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 3 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+}
+
+sub zotus {
+
+    my $sample  = shift;
+    my $cmd = qq{$binaries/tsv-utils select             \
+                    -f2 $unoise/$sample.txt chfilter    \
+                |$binaries/tsv-utils select             \
+                    -f3 - zotu                          \
+                |cut -f1                                \
+                |tee $unoise/$sample.denoise.txt        \
+                |$binaries/fastx-utils subseq           \
+                    $uniques/$sample.fasta              \
+                    -                                   \
+                |$binaries/fastx-utils rename           \
+                    -r - Zotu                           \
+                >$unoise/$sample.fasta; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub maps {
+
+    my $sample  = shift;
+    my $cmd = qq{$binaries/usearch-utils unoise-mem     \
+                    $unoise/$sample.txt                 \
+                |$binaries/tsv-utils subset             \
+                    -c2 -                               \
+                    $unoise/$sample.denoise.txt         \
+                |$binaries/tsv-utils bins               \
+                    -l 'zotu'                           \
+                    -t 2 -s 1                           \
+                    -                                   \
+                >$unoise/$sample.mem.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub size {
+
+    my $sample  = shift;
+    my $cmd = qq{$binaries/usearch-utils unoise-mem     \
+                    $unoise/$sample.txt                 \
+                |$binaries/tsv-utils subset             \
+                    -c2 -                               \
+                    $unoise/$sample.denoise.txt         \
+                |cut -f1                                \
+                |sed  's/;size=/\t/;s/;//;'             \
+                |$binaries/tsv-utils stats              \
+                    -c2 -                               \
+                |$binaries/tsv-utils pad                \
+                    -l 'sample'                         \
+                    - $sample                           \
+                |cut -f1,3                              \
+                |$binaries/tsv-utils view -r -          \
+                >$unoise/$sample.size.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stats_run {
+    
+    my $sh = qq{$runs/stats.sh};
+    
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";    
+    print EXPORT  stats();    
+    close EXPORT;
+
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n}  if(!$dry_run);
+
+}
+
+sub stats {
+
+    my $cmd = qq{cat $unoise/*.size.txt                 \
+                |$binaries/tsv-utils  view -d -         \
+                |$binaries/tsv-utils reorder -          \
+                <(cut -f1  $metadata{mapping_file})     \
+                >$report/denoise.stats.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub summarize_run {
+
+    my $sh = qq{$runs/summarize.sh};
+    open(EXPORT, qq{>$sh} ) || die "[ERR]: can't open $!";
+    
+    print EXPORT  summarize();
+
+    close EXPORT;    
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n} if(!$dry_run);
+
+}
+
+sub summarize {
+
+    my $project = qq{$metadata{project_home}/$metadata{project_id}};
+    my $cmd = qq{$binaries/tsv-utils join                              \
+                    -l sample                                          \
+                    $project/qstats/report/sequencing.stats.txt        \
+                    $project/trimming/report/trimming.stats.txt        \
+                    $project/mergepairs/report/mergepairs.stats.txt    \
+                    $project/primer_strip/report/pcrsearch.stats.txt   \
+                    $project/denoise/report/denoise.stats.txt          \
+                |tail -n +2                                            \
+                |cut -f1,2,6,11,14,19                                  \
+                |$binaries/tsv-utils add_headline                      \
+                    "#sample\\treads\\ttrimmed\\tmerged\\tprimer_match\\tdenoised" \
+                    -                                                  \
+                >$report/sample.stats.txt ;\n};
+       $cmd =~ s/\s+\n\s+/  /msg;
+    return $cmd;
+
+}

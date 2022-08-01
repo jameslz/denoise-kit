@@ -1,0 +1,20 @@
+#metadata
+project_home     /project/denoise-kit
+project_id       data_analysis
+raw_data         /project/denoise-kit/raw_data
+mapping_file     /project/denoise-kit/mapping_file.txt
+
+#hardware
+cpus             40
+parallel         8
+threads          5
+
+#trimmomatic
+trim_param     2:30:10 SLIDINGWINDOW:4:15 LEADING:3 TRAILING:3 MINLEN:36
+
+mergepairs_param  -fastq_minmergelen 100  -fastq_maxmergelen 500 -fastq_maxdiffs 20  -fastq_pctid 90  -fastq_minovlen 16   -fastq_trunctail 2 -fastq_minlen 64
+search_pcr_param  -fwdprimer  GAGTGTCATTTCTACAACGGGACG  -revprimer GATCCCGTAGTTGTGTCTGCA -minamp 150 -maxamp 480
+
+#Zotu
+maxee             1
+unoise3_param     -minsize 8

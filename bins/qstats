@@ -1,0 +1,159 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+my ($config)             = @ARGV;
+
+my  %metadata            = ();
+profiling();
+
+my  $project_home        =  qq{$metadata{project_home}/$metadata{project_id}/qstats};
+my  $fqchk               =  qq{$project_home/fqchk};
+my  $report              =  qq{$project_home/report};
+my  $runs                =  qq{$project_home/runs};
+
+my  $datasets            =  $metadata{raw_data};
+my  @samples_t           =  ();
+my  %sample_h            =  ();
+
+my  $utils               =  dirname( abs_path($0) ) . '/../utils';
+my  $binaries            =  dirname( abs_path($0) ) . '/../binaries';
+my  $qual                =  (exists $metadata{qual}) ? $metadata{qual} : 33;
+my  $suffix              =  'fastq';
+
+my  $dry_run             =  0;
+    $dry_run             =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    inspect();
+    qstat_run();
+    stats_run();
+
+}
+
+sub profiling {
+    
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+            
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}}) || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+        
+        $_ =~ s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+    
+    }
+    close PROFILE;
+  
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $fqchk
+                          $report
+                          $runs};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+}
+
+sub inspect {
+
+    foreach my $sample ( @samples_t ){   
+
+        if(-e qq{$datasets/$sample\_1.fastq}){
+            $suffix      = "fastq";
+        }elsif(-e qq{$datasets/$sample\_1.fq}){
+            $suffix      = "fq";
+        }elsif(-e qq{$datasets/$sample\_1.fastq.gz}){
+            $suffix      = "fastq.gz";
+        }elsif(-e qq{$datasets/$sample\_1.fq.gz}){
+            $suffix      = "fq.gz";
+        }else{
+            print STDERR qq{\n[ERR]: Prefix: $datasets/$sample ... check fail ...\n};
+            print STDERR qq{\n[ERR]: can't find raw data with [1/2].fastq | [1/2].fq or [1/2].fastq.gz | [1/2].fq.gz files. \n};
+            exit();
+        }
+
+    }
+
+}
+
+sub qstat_run {    
+    
+    my $sh   =  qq{$runs/qstat.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {        
+        print EXPORT qstat( $sample );
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs  -v --nlines 1 -p $metadata{cpus} "{}"\n} if(!$dry_run);
+
+}
+
+sub qstat {
+    
+    my $sample  = shift;
+    
+    my $cmd     = qq{cat $datasets/$sample\_1.$suffix   \
+                         $datasets/$sample\_2.$suffix   \
+                    |$binaries/atlas-utils fqchk        \
+                      -p                                \
+                      -q $qual                          \
+                      -l $sample                        \
+                      -                                 \
+                    >$report/$sample.sequencing.stats.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stats_run {
+    
+    my $sh = qq{$runs/stats.sh};
+    
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";    
+    print EXPORT  stats();    
+    close EXPORT;
+
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n}  if(!$dry_run);
+
+}
+
+sub stats {
+
+    my $cmd = qq{cat $report/*.sequencing.stats.txt     \
+                |$binaries/tsv-utils  view -d -         \
+                |$binaries/tsv-utils reorder -          \
+                <(cut -f1  $metadata{mapping_file})     \
+                >$report/sequencing.stats.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}

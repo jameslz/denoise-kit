@@ -1,0 +1,170 @@
+#!/usr/bin/perl  -w
+
+use strict;
+use warnings;
+use Switch;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $usage = qq{
+Usage: denoise-kit  <metadata> <cmd>
+
+Commands
+  -- reads preparation
+     qstats                 reads stats.
+     trimming               trim low quality base and adaptor sequence.
+     mergepairs             merege paired reads.
+     primer_strip           remove primer sequence from merged reads.
+
+  -- denoise/construct zotu table
+     denoise                denoised reads using Error cloud model.
+
+  -- report final result
+     summarize              report the summarize data.
+
+  -- Workflow for the analyis.
+     denoise                pipeline.
+
+  -- auxiliary 
+     validate               check metadata parameters.
+
+Examples:
+    denoise-kit  metadata.txt  qstats,trimming
+    denoise-kit  metadata.txt  pipeline
+
+version: 0.0.1
+
+Licenced:
+(c) 2022-2022 - LEI ZHANG
+Logic Informatics Co.,Ltd.
+zhanglei\@logicinformatics.com
+
+};
+
+if(@ARGV < 2){ print $usage; exit}
+
+my $bins     =   dirname($0) . "/bins";
+my $metadata =   abs_path( (shift @ARGV) );
+my $cmd      =   shift @ARGV;
+my $options  =   ' ';
+   $options  =   join(" ", @ARGV) if(@ARGV > 0 );
+
+my %metadata = ();
+profiling();
+my $home     =   $metadata{project_home};
+my $logs     =   qq{$home/logs};
+
+open (EXPORT, qq{>$home/run.sh}) || die "$!";
+
+my $fh = *EXPORT;
+
+switch($cmd){
+
+    case 'qstats'                {print EXPORT qstats();}
+    case 'trimming'              {print EXPORT trimming();}
+    case 'mergepairs'            {print EXPORT mergepairs();}
+    case 'primer_strip'          {print EXPORT primer_strip();}
+    case 'denoise'               {print EXPORT denoise();}
+    case 'summarize'             {print EXPORT summarize();}
+    case 'pipeline'              {print EXPORT pipeline();}
+    case 'validate'              {print EXPORT validate();}
+    else                         {combine( $fh )};
+
+}
+
+print EXPORT  utils();
+close EXPORT;
+
+system( qq{mkdir -p $logs && bash $home/run.sh} );
+
+exit;
+
+sub profiling {
+
+    open( PROFILE,  $metadata )   || die "[ERR]: can't open $metadata. \n";
+    while(<PROFILE>){
+          $_ =~ s/\s+$//;
+          next if(/^#/ || !/^\S+/);
+          my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+          next if($value eq '-');
+          $metadata{$key}  = $value;
+    } 
+    close PROFILE;
+
+}
+
+sub utils {
+
+    my $utils = qq{if [ -f  "$home/run.sh" ]; then rm "$home/run.sh"; fi\n};
+    return $utils;
+
+}
+
+sub qstats {
+    my $cmd = qq{$bins/qstats $metadata  &>$logs/qstats.txt ;\n};
+    return $cmd;
+}
+
+sub trimming {
+    my $cmd = qq{$bins/trimming $metadata  &>$logs/trimming.txt ;\n};
+    return $cmd;
+}
+
+sub mergepairs {
+    my $cmd = qq{$bins/mergepairs $metadata &>$logs/mergepairs.txt ;\n};
+    return $cmd;
+}
+
+sub primer_strip {
+    my $cmd = qq{$bins/primer_strip $metadata &>$logs/primer_strip.txt ;\n};
+    return $cmd;
+}
+
+sub denoise {
+    my $cmd = qq{$bins/denoise $metadata &>$logs/denoise.txt ;\n};
+    return $cmd;
+}
+
+sub summarize {
+    my $cmd = qq{$bins/summarize $metadata &>$logs/summarize.txt ;\n};
+    return $cmd;
+}
+
+sub report {
+    my $cmd = qq{$bins/report $metadata &>$logs/report.txt ;\n};
+    return $cmd;
+}
+
+sub validate {
+    my $cmd = qq{$bins/validate $metadata ;\n};
+    return $cmd;
+}
+
+sub pipeline {
+        
+    my @cmds = ();
+    foreach my $p (split /,/, "qstats,trimming,mergepairs,primer_strip,denoise,summarize") {
+       push @cmds, qq{$bins/$p $metadata &>$logs/$p.txt ;\n};
+    }
+
+   return join("", @cmds);
+}
+
+sub combine {
+    
+    my $fh = shift;
+    foreach my  $it (split /,/, $cmd) {
+        switch( $it ){
+            case 'qstats'               {print $fh qstats();}
+            case 'trimming'             {print $fh trimming();}
+            case 'mergepairs'           {print $fh mergepairs();}
+            case 'primer_strip'         {print $fh primer_strip();}
+            case 'denoise'              {print $fh denoise();}
+            case 'pipeline'             {print $fh pipeline();}
+            case 'summarize'            {print $fh summarize();}
+            case 'validate'             {print $fh validate();}
+            else                        {warn "No such '$cmd' CMD!\n"; exit(0)};
+
+        }
+    }
+}
