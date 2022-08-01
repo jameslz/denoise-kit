@@ -23,7 +23,7 @@ Commands
      summarize              report the summarize data.
 
   -- Workflow for the analyis.
-     denoise                pipeline.
+     pipeline               pipeline run.
 
   -- auxiliary 
      validate               check metadata parameters.
